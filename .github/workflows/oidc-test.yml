@@ -1,0 +1,73 @@
+name: OIDC fork-PR research test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      VARS_TEST: ${{ vars.VARS_TEST }}
+      CANARY: ${{ secrets.CANARY }}
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+
+      - name: Dump OIDC token claims
+        shell: bash
+        run: |
+          echo "=== OIDC availability ==="
+          if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+            echo "OIDC request URL IS present for this run"
+            STATUS=$(curl -sS -m 10 -o /tmp/oidc.json -w '%{http_code}' \
+              -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")
+            echo "token endpoint HTTP: $STATUS"
+            python3 - << 'EOF'
+            import json, base64
+            try:
+                j = json.load(open('/tmp/oidc.json'))
+                tok = j.get('value') or ''
+                print('token length:', len(tok))
+                if tok.count('.') == 2:
+                    h, p, _s = tok.split('.')
+                    pad = lambda x: x + '=' * (-len(x) % 4)
+                    hdr = json.loads(base64.urlsafe_b64decode(pad(h)))
+                    claims = json.loads(base64.urlsafe_b64decode(pad(p)))
+                    print('alg:', hdr.get('alg'), '| kid:', hdr.get('kid'))
+                    for k in sorted(claims):
+                        print(f'claim {k}: {claims[k]}')
+                else:
+                    print('body:', str(j)[:300])
+            except Exception as e:
+                print('decode error:', e)
+                try: print(open('/tmp/oidc.json').read()[:300])
+                except Exception: pass
+            EOF
+          else
+            echo "NO ACTIONS_ID_TOKEN_REQUEST_URL: OIDC token NOT available on this run"
+          fi
+
+      - name: Check variable interpolation
+        shell: bash
+        run: |
+          echo "VARS_TEST length: ${#VARS_TEST}"
+          echo "VARS_TEST value: '$VARS_TEST'"
+
+      - name: Check secret injection (canary)
+        shell: bash
+        run: |
+          echo "CANARY length: ${#CANARY} (expect 0 if withheld)"
+
+      - name: Report run context
+        shell: bash
+        run: |
+          echo "event: ${GITHUB_EVENT_NAME}"
+          echo "repo: ${GITHUB_REPOSITORY}"
+          echo "ref:  ${GITHUB_REF}"
+          echo "sha:  ${GITHUB_SHA}"
